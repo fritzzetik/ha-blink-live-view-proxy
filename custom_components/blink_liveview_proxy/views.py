@@ -608,6 +608,10 @@ button.danger {{
   background:#dc2626;
 }}
 button.talk {{
+  /* Without this iOS may claim a long press as a pan gesture and fire
+     pointercancel mid-hold, which stopTalk treats as a release. The rule
+     above already refuses selection and the callout for the same reason. */
+  touch-action:none;
   min-width:94px;
   background:#0f766e;
 }}
@@ -715,6 +719,8 @@ let talkMute = null;
 let talkActive = false;
 let talkStarting = false;
 let talkListening = false;
+// Which pointer is holding the button down, or null when none is.
+let talkPointerId = null;
 
 // Sound, and why the stream starts without it.
 //
@@ -964,6 +970,13 @@ async function startTalk(event) {{
   if (!pttSupported || talkActive || talkStarting || !video.classList.contains("ready")) {{
     return;
   }}
+  // A finger held on a touchscreen drifts, and leaving the button's box fires
+  // pointerleave, which stopTalk treats as a release. Capturing the pointer
+  // keeps its events on the button until it is actually lifted.
+  if (event && event.pointerId !== undefined && talk.setPointerCapture) {{
+    try {{ talk.setPointerCapture(event.pointerId); }} catch (err) {{}}
+    talkPointerId = event.pointerId;
+  }}
   const AudioContextClass = window.AudioContext || window.webkitAudioContext;
   if (!window.isSecureContext) {{
     statusText.textContent = "Microphone needs HTTPS or a trusted local browser origin.";
@@ -1023,6 +1036,7 @@ async function stopTalk(event) {{
     event.preventDefault();
   }}
   const wasActive = talkActive;
+  talkPointerId = null;
   talkStarting = false;
   talkActive = false;
   talkListening = false;
@@ -1255,7 +1269,14 @@ video.addEventListener("loadedmetadata", positionLiveActions);
 video.addEventListener("resize", positionLiveActions);
 window.addEventListener("resize", positionLiveActions);
 window.addEventListener("orientationchange", positionLiveActionsThroughRotation);
-window.addEventListener("blur", stopTalk);
+// A focus change must not end a press that is still held: iOS raises blur for
+// its own microphone indicator, among other things. Switching away for real
+// lifts the pointer first, so the mic still closes when it should.
+window.addEventListener("blur", () => {{
+  if (talkPointerId === null) {{
+    stopTalk();
+  }}
+}});
 window.addEventListener("beforeunload", () => {{
   stopTalk();
 }});
