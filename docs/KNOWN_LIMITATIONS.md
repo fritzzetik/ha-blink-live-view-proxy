@@ -65,6 +65,20 @@
 - On low-power Android wall panels, tap-to-toggle talk is more reliable than
   press-and-hold because WebView is decoding video and capturing microphone
   audio at the same time.
+- **On a Blink Video Doorbell (`lotus`), `snap_picture` only produces an image
+  while motion detection is enabled.** Measured with a control, three states in
+  one sitting: detection off → `thumbnail` stays `None`; detection switched on
+  → still `None`; snapshot requested with it on → `thumbnail` appears. No error
+  is logged either way, `sync_signal_strength` was 5 and the battery good, so
+  the refusal is silent. Other families in the same account answer a snapshot
+  request with detection off, which is why this reads as a doorbell property
+  rather than a general rule. Reported by @fritzzetik.
+- Live view and snapshots are independent paths on a doorbell, and one can work
+  while the other does not. On this account both doorbells served live-view
+  segments while ignoring nine snapshot requests across three sittings — two of
+  them taken in the same minutes the live views were running, with motion
+  detection on throughout. No cause established for that second part; recorded
+  because "the doorbell is asleep" is the natural guess and it is wrong.
 - Live view wakes cameras and consumes Blink live-view/cloud quota.
 - The direct player downloads the most recent watched live view; it is not a
   general DVR.
