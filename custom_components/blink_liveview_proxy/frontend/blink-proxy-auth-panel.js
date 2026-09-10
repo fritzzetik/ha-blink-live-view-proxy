@@ -28,6 +28,10 @@ class BlinkProxyAuthPanel extends HTMLElement {
     // and cannot report its own progress, so every phase below is inferred
     // from what the panel can still see: health, and the version it reports.
     this._update = null;
+    // Fetched on demand, never with the panel poll: a journal read spawns a
+    // process on the proxy host, and nobody needs one every few seconds.
+    this._updateLog = null;
+    this._updateLogBusy = false;
     // Polling runs while the PIN is being typed. Only rebuild when something
     // visible changed, or the focused credential field would be erased.
     this._signature = null;
@@ -383,7 +387,7 @@ class BlinkProxyAuthPanel extends HTMLElement {
     if (Date.now() - this._update.since > UPDATE_TIMEOUT_MS) {
       return {
         phase: "timeout",
-        label: `The proxy still reports ${versions.proxy || "no version"} after five minutes. It may have failed — check the proxy log, and the Home Assistant log.`,
+        label: `The proxy still reports ${versions.proxy || "no version"} after five minutes. It may have failed \u2014 open the update log below, which is the proxy updater's own journal.`,
       };
     }
     if (this._panelError || !healthy) {
@@ -392,15 +396,104 @@ class BlinkProxyAuthPanel extends HTMLElement {
     return { phase: "working", label: "Update started. The proxy has not restarted yet." };
   }
 
+  async _loadUpdateLog() {
+    if (this._updateLogBusy) return;
+    this._updateLogBusy = true;
+    this._render();
+    try {
+      const log = await this._panelApi("GET", "/update/log?lines=200");
+      this._updateLog = log && log.available === false
+        ? { available: false, reason: log.reason || "The proxy has no update log." }
+        : log;
+    } catch (error) {
+      const body = (error && error.body) || {};
+      this._updateLog = {
+        available: false,
+        reason: body.reason || "Home Assistant could not read the proxy update log.",
+      };
+    } finally {
+      this._updateLogBusy = false;
+      this._render();
+    }
+  }
+
+  // What to do by hand, for the install this actually is. The button covers
+  // one of these four; the other three have never had anywhere in the UI that
+  // said what to run instead, which left "updates are manual here" as the whole
+  // of the advice.
+  _manualUpdateSteps(method) {
+    if (method === "systemd") {
+      return {
+        title: "Update this proxy by hand (systemd host)",
+        steps: [
+          "sudo systemctl start blink-liveview-proxy-update.service",
+          "journalctl -u blink-liveview-proxy-update.service -f",
+        ],
+        note: "The unit exits straight away when the newest tag is already installed. If it exits 1 within a second having printed nothing, its checkout cannot fetch tags \u2014 the proxy now repairs that before every update, and 'sudo git -C /opt/src/ha-blink-live-view-proxy fetch --tags --prune --force' does it by hand.",
+      };
+    }
+    if (method === "supervisor") {
+      return {
+        title: "Update this proxy by hand (add-on)",
+        steps: ["Settings \u2192 Add-ons \u2192 Blink Live View Proxy \u2192 Update"],
+        note: "Supervisor owns the add-on's version, so the update comes from the add-on store rather than from this panel.",
+      };
+    }
+    if (method === "container") {
+      return {
+        title: "Update this proxy by hand (container)",
+        steps: [
+          "docker pull ghcr.io/teethree89/ha-blink-live-view-proxy:latest",
+          "docker rm -f blink-liveview-proxy",
+          "start it again with the same options and volumes",
+        ],
+        note: "A container cannot replace the image it is running from, which is why there is no button for this one.",
+      };
+    }
+    return {
+      title: "Update this proxy by hand",
+      steps: [
+        "curl -fsSL https://raw.githubusercontent.com/Teethree89/ha-blink-live-view-proxy/main/scripts/bootstrap.sh | sudo bash",
+      ],
+      note: "This keeps a checkout on the proxy host and moves it to the newest tag. Your token, config and Blink session are kept as they are.",
+    };
+  }
+
+  _manualUpdateHtml(method) {
+    const manual = this._manualUpdateSteps(method);
+    return `<details class="manual-update">
+      <summary>${this._escape(manual.title)}</summary>
+      <ol>${manual.steps.map((step) => `<li><code>${this._escape(step)}</code></li>`).join("")}</ol>
+      <p class="muted">${this._escape(manual.note)}</p>
+    </details>`;
+  }
+
+  _updateLogHtml() {
+    if (this._updateLogBusy) return `<p class="muted">Reading the proxy update log\u2026</p>`;
+    if (!this._updateLog) return "";
+    if (this._updateLog.available === false) {
+      return `<p class="muted">${this._escape(this._updateLog.reason)}</p>`;
+    }
+    const lines = this._updateLog.lines || [];
+    if (!lines.length) return `<p class="muted">The update log is empty.</p>`;
+    const result = this._updateLog.result;
+    return `${result ? `<p class="muted">Last run: ${this._escape(result)}</p>` : ""}
+      <pre class="update-log">${this._escape(lines.join("\n"))}</pre>`;
+  }
+
   _updateBannerHtml() {
     const status = this._updateStatus();
     if (!status) return "";
     const busy = status.phase === "working";
+    const method = ((this._panelData || {}).update || {}).method || "manual";
     return `<ha-card class="update-banner ${status.phase}">
       <h2>Proxy update</h2>
       <div class="bar ${busy ? "busy" : ""}" role="progressbar" aria-label="Proxy update progress"><span></span></div>
       <p class="detail">${this._escape(status.label)}</p>
       ${busy ? "" : `<button type="button" id="update-reload">Reload page</button><button type="button" class="secondary" id="update-dismiss">Dismiss</button>`}
+      ${busy ? "" : `<button type="button" class="secondary" id="update-log">${this._updateLog ? "Refresh log" : "Show update log"}</button>`}
+      ${busy ? "" : this._updateLogHtml()}
+      ${status.phase === "timeout" ? this._manualUpdateHtml(method) : ""}
     </ha-card>`;
   }
 
@@ -486,6 +579,7 @@ class BlinkProxyAuthPanel extends HTMLElement {
         <dl><dt>Proxy URL</dt><dd><code>${this._escape(data.base_url)}</code></dd><dt>Authentication</dt><dd>${this._escape(data.status.auth_state || "unknown")}</dd><dt>Update method</dt><dd>${this._escape(data.update.method || "manual")}</dd>${data.environment && data.environment.python ? `<dt>Proxy host</dt><dd>Python ${this._escape(data.environment.python)}</dd>` : ""}</dl>
         ${behind ? `<p class="warn">The proxy is behind integration ${this._escape(data.versions.integration)}.</p>` : `<p class="good">The integration and proxy versions are aligned.</p>`}
         ${behind && data.update.available ? `<button id="update" ${this._busy ? "disabled" : ""}>Update proxy</button>` : !data.update.available ? `<p class="muted">Updates are manual for this installation${data.update.blocker ? `: ${this._escape(data.update.blocker)}` : "."}</p>` : ""}
+        ${behind || !data.update.available ? this._manualUpdateHtml(data.update.method || "manual") : ""}
         <button type="button" class="secondary" id="recheck" ${this._busy ? "disabled" : ""}>Refresh details</button>
       </ha-card>
       ${this._updateBannerHtml()}
@@ -568,7 +662,7 @@ class BlinkProxyAuthPanel extends HTMLElement {
     this._signature = signature;
     const content = { overview: this._overviewHtml(), cameras: this._camerasHtml(), auth: this._authHtml(), yaml: this._yamlHtml() }[this._tab];
     this.shadowRoot.innerHTML = `<style>
-      :host{display:block;min-height:100%;box-sizing:border-box;padding:24px;color:var(--primary-text-color);background:var(--primary-background-color);font-family:var(--paper-font-body1_-_font-family,sans-serif)} main{max-width:1100px;margin:0 auto} header{display:flex;align-items:center;gap:10px;margin-bottom:16px} header button.back{display:flex;flex:0 0 auto;width:48px;height:48px;margin:0;padding:12px;background:none;color:var(--primary-text-color);border-radius:50%}header button.back svg{width:24px;height:24px;fill:currentColor} h1{font-size:26px;margin:0} h1 .wordmark{display:block;height:40px;width:auto} h2{font-size:19px;margin:0 0 12px} h3{font-size:15px;margin:20px 0 8px} ha-card{display:block;padding:22px;margin-bottom:18px} nav{display:flex;gap:4px;overflow-x:auto;margin-bottom:20px;border-bottom:1px solid var(--divider-color)} nav button{margin:0;padding:12px 16px;background:transparent;color:var(--secondary-text-color);border-radius:0;border-bottom:3px solid transparent;white-space:nowrap} nav button.active{color:var(--primary-color);border-bottom-color:var(--primary-color)} button{margin:14px 8px 0 0;padding:10px 16px;font:inherit;border:0;border-radius:4px;cursor:pointer;background:var(--primary-color);color:var(--text-primary-color,white)} button.secondary{background:var(--secondary-background-color);color:var(--primary-text-color);border:1px solid var(--divider-color)} button:disabled{opacity:.55;cursor:default}.notice{padding:11px 14px;margin-bottom:16px;border-radius:6px;background:var(--secondary-background-color)}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.metrics ha-card{display:flex;flex-direction:column;gap:8px}.metrics strong{font-size:20px}.good{color:var(--success-color,#2e7d32)}.warn{color:var(--warning-color,#e68a00)}.muted{color:var(--secondary-text-color);font-size:14px;line-height:1.5}dl{display:grid;grid-template-columns:max-content 1fr;gap:8px 18px}dt{color:var(--secondary-text-color)}dd{margin:0;overflow-wrap:anywhere}.camera-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.camera-head{display:flex;justify-content:space-between;gap:12px}.badge{display:inline-block;height:max-content;padding:5px 9px;border-radius:999px;background:var(--secondary-background-color);font-size:12px}.capabilities{display:flex;flex-wrap:wrap;gap:6px}.entities{display:flex;flex-direction:column;gap:6px}.entity{display:flex;flex-direction:column;align-items:flex-start;width:100%;margin:0;padding:10px 12px;text-align:left;background:var(--secondary-background-color);color:var(--primary-text-color);border:1px solid var(--divider-color)}.entity.disabled{opacity:.65}.entity small{color:var(--secondary-text-color);margin-top:3px}.state{border-left:4px solid var(--primary-color);padding:12px 16px;background:var(--secondary-background-color);border-radius:4px}.state.success{border-color:var(--success-color,#2e7d32)}.state.failure,.state.expired{border-color:var(--error-color,#c62828)}label{display:block;margin:14px 0 6px;font-weight:600}input,select,textarea{box-sizing:border-box;width:100%;padding:11px;font:inherit;color:var(--primary-text-color);background:var(--card-background-color);border:1px solid var(--divider-color);border-radius:4px}pre,textarea{font-family:monospace;font-size:13px;line-height:1.45}pre{padding:12px;overflow:auto;background:var(--secondary-background-color)}textarea{min-height:430px;margin-top:16px;white-space:pre}.yaml-controls{display:grid;grid-template-columns:1fr 1fr;gap:14px}.checks{list-style:none;display:flex;flex-direction:column;gap:12px;margin:18px 0 0;padding:0}.check{padding:14px 16px;background:var(--secondary-background-color);border:1px solid var(--divider-color);border-left:4px solid var(--secondary-text-color);border-radius:6px}.check.ok{border-left-color:var(--success-color,#2e7d32)}.check.missing.required{border-left-color:var(--error-color,#c62828)}.check.missing.optional{border-left-color:var(--warning-color,#e68a00)}.check-head{display:flex;align-items:flex-start;gap:12px}.check-text{flex:1 1 auto;min-width:0}.check h3{margin:0;font-size:15px}.check .detail{margin:4px 0 0;font-size:14px;line-height:1.5}.check .muted{margin:4px 0 0;font-size:13px}.dot{flex:0 0 auto;width:10px;height:10px;margin-top:6px;border-radius:50%;background:var(--secondary-text-color)}.check.ok .dot{background:var(--success-color,#2e7d32)}.check.missing.required .dot{background:var(--error-color,#c62828)}.check.missing.optional .dot{background:var(--warning-color,#e68a00)}.badge.status{white-space:nowrap}.check details{margin-top:10px}.check summary{padding:4px 0;font-size:13px;color:var(--secondary-text-color);cursor:pointer}.check details ul{margin:8px 0 0;padding-left:20px;font-size:14px;line-height:1.55;color:var(--secondary-text-color)}.check details li{margin-bottom:6px}.check details a{color:var(--primary-color)}.setup .paths{margin:4px 0 6px;padding-left:22px;line-height:1.55}.setup .paths li{margin-bottom:10px}.setup .paths a{color:var(--primary-color);white-space:nowrap}.setup code{font-size:13px}.update-banner .bar{position:relative;height:6px;margin:4px 0 0;border-radius:999px;background:var(--divider-color);overflow:hidden}.update-banner .bar span{position:absolute;top:0;bottom:0;left:0;width:100%;border-radius:999px;background:var(--primary-color)}.update-banner .bar.busy span{width:40%;animation:blink-proxy-slide 1.4s ease-in-out infinite}.update-banner.done .bar span{background:var(--success-color,#2e7d32)}.update-banner.timeout .bar span{background:var(--warning-color,#e68a00)}.update-banner .detail{margin:12px 0 0;font-size:14px;line-height:1.5}@keyframes blink-proxy-slide{0%{left:-40%}100%{left:100%}}@media(prefers-reduced-motion:reduce){.update-banner .bar.busy span{width:100%;animation:none;opacity:.6}}@media(max-width:760px){:host{padding:14px}.metrics,.camera-grid,.yaml-controls{grid-template-columns:1fr}header{align-items:center}.check-head{flex-wrap:wrap}h1 .wordmark{height:32px}}
+      :host{display:block;min-height:100%;box-sizing:border-box;padding:24px;color:var(--primary-text-color);background:var(--primary-background-color);font-family:var(--paper-font-body1_-_font-family,sans-serif)} main{max-width:1100px;margin:0 auto} header{display:flex;align-items:center;gap:10px;margin-bottom:16px} header button.back{display:flex;flex:0 0 auto;width:48px;height:48px;margin:0;padding:12px;background:none;color:var(--primary-text-color);border-radius:50%}header button.back svg{width:24px;height:24px;fill:currentColor} h1{font-size:26px;margin:0} h1 .wordmark{display:block;height:40px;width:auto} h2{font-size:19px;margin:0 0 12px} h3{font-size:15px;margin:20px 0 8px} ha-card{display:block;padding:22px;margin-bottom:18px} nav{display:flex;gap:4px;overflow-x:auto;margin-bottom:20px;border-bottom:1px solid var(--divider-color)} nav button{margin:0;padding:12px 16px;background:transparent;color:var(--secondary-text-color);border-radius:0;border-bottom:3px solid transparent;white-space:nowrap} nav button.active{color:var(--primary-color);border-bottom-color:var(--primary-color)} button{margin:14px 8px 0 0;padding:10px 16px;font:inherit;border:0;border-radius:4px;cursor:pointer;background:var(--primary-color);color:var(--text-primary-color,white)} button.secondary{background:var(--secondary-background-color);color:var(--primary-text-color);border:1px solid var(--divider-color)} button:disabled{opacity:.55;cursor:default}.notice{padding:11px 14px;margin-bottom:16px;border-radius:6px;background:var(--secondary-background-color)}.metrics{display:grid;grid-template-columns:repeat(4,1fr);gap:14px}.metrics ha-card{display:flex;flex-direction:column;gap:8px}.metrics strong{font-size:20px}.good{color:var(--success-color,#2e7d32)}.warn{color:var(--warning-color,#e68a00)}.muted{color:var(--secondary-text-color);font-size:14px;line-height:1.5}dl{display:grid;grid-template-columns:max-content 1fr;gap:8px 18px}dt{color:var(--secondary-text-color)}dd{margin:0;overflow-wrap:anywhere}.camera-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}.camera-head{display:flex;justify-content:space-between;gap:12px}.badge{display:inline-block;height:max-content;padding:5px 9px;border-radius:999px;background:var(--secondary-background-color);font-size:12px}.capabilities{display:flex;flex-wrap:wrap;gap:6px}.entities{display:flex;flex-direction:column;gap:6px}.entity{display:flex;flex-direction:column;align-items:flex-start;width:100%;margin:0;padding:10px 12px;text-align:left;background:var(--secondary-background-color);color:var(--primary-text-color);border:1px solid var(--divider-color)}.entity.disabled{opacity:.65}.entity small{color:var(--secondary-text-color);margin-top:3px}.state{border-left:4px solid var(--primary-color);padding:12px 16px;background:var(--secondary-background-color);border-radius:4px}.state.success{border-color:var(--success-color,#2e7d32)}.state.failure,.state.expired{border-color:var(--error-color,#c62828)}label{display:block;margin:14px 0 6px;font-weight:600}input,select,textarea{box-sizing:border-box;width:100%;padding:11px;font:inherit;color:var(--primary-text-color);background:var(--card-background-color);border:1px solid var(--divider-color);border-radius:4px}pre,textarea{font-family:monospace;font-size:13px;line-height:1.45}pre{padding:12px;overflow:auto;background:var(--secondary-background-color)}textarea{min-height:430px;margin-top:16px;white-space:pre}.yaml-controls{display:grid;grid-template-columns:1fr 1fr;gap:14px}.checks{list-style:none;display:flex;flex-direction:column;gap:12px;margin:18px 0 0;padding:0}.check{padding:14px 16px;background:var(--secondary-background-color);border:1px solid var(--divider-color);border-left:4px solid var(--secondary-text-color);border-radius:6px}.check.ok{border-left-color:var(--success-color,#2e7d32)}.check.missing.required{border-left-color:var(--error-color,#c62828)}.check.missing.optional{border-left-color:var(--warning-color,#e68a00)}.check-head{display:flex;align-items:flex-start;gap:12px}.check-text{flex:1 1 auto;min-width:0}.check h3{margin:0;font-size:15px}.check .detail{margin:4px 0 0;font-size:14px;line-height:1.5}.check .muted{margin:4px 0 0;font-size:13px}.dot{flex:0 0 auto;width:10px;height:10px;margin-top:6px;border-radius:50%;background:var(--secondary-text-color)}.check.ok .dot{background:var(--success-color,#2e7d32)}.check.missing.required .dot{background:var(--error-color,#c62828)}.check.missing.optional .dot{background:var(--warning-color,#e68a00)}.badge.status{white-space:nowrap}.check details{margin-top:10px}.check summary{padding:4px 0;font-size:13px;color:var(--secondary-text-color);cursor:pointer}.check details ul{margin:8px 0 0;padding-left:20px;font-size:14px;line-height:1.55;color:var(--secondary-text-color)}.check details li{margin-bottom:6px}.check details a{color:var(--primary-color)}.setup .paths{margin:4px 0 6px;padding-left:22px;line-height:1.55}.setup .paths li{margin-bottom:10px}.setup .paths a{color:var(--primary-color);white-space:nowrap}.setup code{font-size:13px}.update-banner .bar{position:relative;height:6px;margin:4px 0 0;border-radius:999px;background:var(--divider-color);overflow:hidden}.update-banner .bar span{position:absolute;top:0;bottom:0;left:0;width:100%;border-radius:999px;background:var(--primary-color)}.update-banner .bar.busy span{width:40%;animation:blink-proxy-slide 1.4s ease-in-out infinite}.update-banner.done .bar span{background:var(--success-color,#2e7d32)}.update-banner.timeout .bar span{background:var(--warning-color,#e68a00)}.update-banner .detail{margin:12px 0 0;font-size:14px;line-height:1.5}pre.update-log{max-height:320px;margin:14px 0 0;white-space:pre;font-size:12px;line-height:1.5}details.manual-update{margin:16px 0 0;padding:12px 14px;background:var(--secondary-background-color);border:1px solid var(--divider-color);border-radius:6px}details.manual-update summary{font-size:14px;cursor:pointer;color:var(--primary-text-color)}details.manual-update ol{margin:12px 0 0;padding-left:22px;line-height:1.9}details.manual-update code{font-size:13px;overflow-wrap:anywhere}details.manual-update .muted{margin:10px 0 0}@keyframes blink-proxy-slide{0%{left:-40%}100%{left:100%}}@media(prefers-reduced-motion:reduce){.update-banner .bar.busy span{width:100%;animation:none;opacity:.6}}@media(max-width:760px){:host{padding:14px}.metrics,.camera-grid,.yaml-controls{grid-template-columns:1fr}header{align-items:center}.check-head{flex-wrap:wrap}h1 .wordmark{height:32px}}
     </style><main><header><button type="button" class="back" id="back" aria-label="Back"><svg viewBox="0 0 24 24"><path d="M20,11V13H8L13.5,18.5L12.08,19.92L4.16,12L12.08,4.08L13.5,5.5L8,11H20Z"/></svg></button><div><h1>${this._wordmark()}</h1><p class="muted">Admin dashboard</p></div></header><nav>${[["overview","Overview"],["cameras","Cameras & entities"],["auth","Authentication"],["yaml","YAML"]].map(([key,label]) => `<button data-tab="${key}" class="${this._tab === key ? "active" : ""}">${label}</button>`).join("")}</nav>${this._notice ? `<div class="notice" role="status">${this._escape(this._notice)}</div>` : ""}${content}</main>`;
     this._renderExpiry();
     this.shadowRoot.querySelectorAll("[data-tab]").forEach((node) => node.addEventListener("click", () => { this._tab = node.dataset.tab; this._notice = ""; this._render(); }));
@@ -592,6 +686,7 @@ class BlinkProxyAuthPanel extends HTMLElement {
     // repaints from its own poll - and reloading on its own would also hide a
     // failed update behind a fresh page.
     this.shadowRoot.getElementById("update-reload")?.addEventListener("click", () => window.location.reload());
+    this.shadowRoot.getElementById("update-log")?.addEventListener("click", () => this._loadUpdateLog());
     this.shadowRoot.getElementById("update-dismiss")?.addEventListener("click", () => {
       this._update = null;
       this._render();

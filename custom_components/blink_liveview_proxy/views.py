@@ -83,6 +83,7 @@ def async_register_views(hass: HomeAssistant) -> None:
     hass.http.register_view(BlinkLiveviewProxyAuthActionView(hass))
     hass.http.register_view(BlinkLiveviewProxyPanelView(hass))
     hass.http.register_view(BlinkLiveviewProxyPanelUpdateView(hass))
+    hass.http.register_view(BlinkLiveviewProxyPanelUpdateLogView(hass))
     hass.http.register_view(BlinkLiveviewProxyPanelYamlView(hass))
     hass.data[DOMAIN]["_views_registered"] = True
 
@@ -2920,6 +2921,60 @@ class BlinkLiveviewProxyPanelView(HomeAssistantView):
             await _panel_payload(self.hass, secure_context),
             headers=AUTH_VIEW_HEADERS,
         )
+
+
+class BlinkLiveviewProxyPanelUpdateLogView(HomeAssistantView):
+    """Hand the proxy updater's own journal to the panel.
+
+    The panel told people to "check the proxy log" when an update stopped
+    reporting progress, without naming the log or offering any way to read it.
+    On a headless host that means finding an SSH session before you can learn
+    anything, which is exactly the moment someone gives up.
+    """
+
+    requires_auth = True
+    url = "/api/blink_liveview_proxy/panel/update/log"
+    name = "api:blink_liveview_proxy:panel_update_log"
+
+    def __init__(self, hass: HomeAssistant) -> None:
+        self.hass = hass
+
+    @require_admin
+    async def get(self, request: web.Request) -> web.Response:
+        entry_id, runtime_value = _runtime_entry(self.hass)
+        coordinator = (runtime_value or {}).get("coordinator")
+        if coordinator is None:
+            return web.json_response(
+                {"available": False, "reason": PANEL_UPDATE_MESSAGES["entry_gone"]},
+                status=503,
+                headers=AUTH_VIEW_HEADERS,
+            )
+        try:
+            lines = int(request.query.get("lines", "200"))
+        except (TypeError, ValueError):
+            lines = 200
+        try:
+            payload = await coordinator.client.async_get_proxy_update_log(lines)
+        except ProxyAuthError:
+            return web.json_response(
+                {"available": False, "reason": "The proxy rejected the token."},
+                status=502,
+                headers=AUTH_VIEW_HEADERS,
+            )
+        except ProxyConnectionError as err:
+            # 501 is the honest answer for an install with no updater unit, and
+            # the panel turns it into the manual instructions instead.
+            reason = (
+                PANEL_UPDATE_MESSAGES["not_supported"]
+                if err.status == 501
+                else "The proxy could not be reached for its update log."
+            )
+            return web.json_response(
+                {"available": False, "reason": reason},
+                status=502 if err.status != 501 else 501,
+                headers=AUTH_VIEW_HEADERS,
+            )
+        return web.json_response(payload, headers=AUTH_VIEW_HEADERS)
 
 
 class BlinkLiveviewProxyPanelUpdateView(HomeAssistantView):

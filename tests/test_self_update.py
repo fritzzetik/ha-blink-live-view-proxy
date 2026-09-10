@@ -18,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import json
+import os
 import pathlib
 import re
 import shutil
@@ -500,6 +501,97 @@ async def async_main() -> None:
     test_integration_decision()
     test_strings_and_flow()
     test_installer()
+    await test_preflight_repairs_moved_tags()
+    test_bootstrap_forces_the_tag_fetch()
+
+
+async def test_preflight_repairs_moved_tags() -> None:
+    """A tag moved upstream must not wedge every future update.
+
+    Built out of two real git repositories rather than a mock, because the
+    behaviour under test is git's own: `fetch --tags` refuses to move a tag
+    that already exists locally and points elsewhere, and exits 1 saying so -
+    except that bootstrap.sh passes --quiet, which suppresses that line. The
+    bug this covers was a host silently stuck on 0.7.1 through five presses of
+    the update button, each failing in under a second with an empty journal.
+    """
+    print("\npreflight repairs a checkout wedged by a moved tag")
+    if not shutil.which("git"):
+        check(True, "git is unavailable, skipping the tag-wedge test")
+        return
+
+    async def git(*args: str, cwd: pathlib.Path) -> tuple[int, str]:
+        process = await asyncio.create_subprocess_exec(
+            "git", *args, cwd=str(cwd),
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.STDOUT,
+        )
+        out, _ = await process.communicate()
+        return process.returncode or 0, out.decode()
+
+    with tempfile.TemporaryDirectory() as tmp:
+        root = pathlib.Path(tmp)
+        upstream = root / "upstream"
+        upstream.mkdir()
+        env = ["-c", "user.email=t@example.com", "-c", "user.name=t"]
+        await git("init", "-q", "-b", "main", cwd=upstream)
+        (upstream / "f").write_text("one")
+        await git("add", "-A", cwd=upstream)
+        await git(*env, "commit", "-qm", "one", cwd=upstream)
+        await git("tag", "v0.1.0", cwd=upstream)
+
+        checkout = root / "checkout"
+        await git("clone", "-q", str(upstream), str(checkout), cwd=root)
+
+        # Recreate the tag upstream on a different commit, exactly as deleting
+        # a prerelease and re-cutting a release does.
+        (upstream / "f").write_text("two")
+        await git("add", "-A", cwd=upstream)
+        await git(*env, "commit", "-qm", "two", cwd=upstream)
+        await git("tag", "-f", "v0.1.0", cwd=upstream)
+
+        plain, _ = await git("fetch", "--tags", "--prune", "--quiet", cwd=checkout)
+        check(plain == 1, f"a plain tag fetch exits 1 once a tag has moved (got {plain})")
+
+        saved = os.environ.get("SRC_DIR")
+        os.environ["SRC_DIR"] = str(checkout)
+        try:
+            check(
+                selfupdate.source_dir() == checkout,
+                "source_dir honours SRC_DIR, the way the updater unit sets it",
+            )
+            notes = await selfupdate.preflight()
+            check(bool(notes), f"preflight reports the repair it made (got {notes})")
+            check(
+                any("--force" in note for note in notes),
+                "the note says the fetch had to be forced, so the log explains itself",
+            )
+            after, _ = await git("fetch", "--tags", "--prune", "--quiet", cwd=checkout)
+            check(after == 0, f"the checkout fetches cleanly afterwards (got {after})")
+            check(
+                await selfupdate.preflight() == [],
+                "a healthy checkout reports nothing, so this stays silent in normal use",
+            )
+        finally:
+            if saved is None:
+                os.environ.pop("SRC_DIR", None)
+            else:
+                os.environ["SRC_DIR"] = saved
+
+
+def test_bootstrap_forces_the_tag_fetch() -> None:
+    """The script must not be able to regress to a silent wedge."""
+    print("\nbootstrap.sh fetches tags with --force")
+    script = (ROOT / "scripts/bootstrap.sh").read_text()
+    fetches = re.findall(r"git -C \"\$SRC_DIR\" fetch[^\n]*", script)
+    check(bool(fetches), "bootstrap.sh still fetches into the checkout")
+    check(
+        all("--force" in line for line in fetches),
+        f"every tag fetch passes --force (found {fetches})",
+    )
+    check(
+        "would clobber" in script or "clobber existing tag" in script,
+        "the reason --force is there is written down next to it",
+    )
 
 
 def main() -> int:
