@@ -8,6 +8,88 @@ While this is pre-1.0, the minor version moves for anything user-visible (new
 behaviour, a dropped architecture, a changed default) and the patch version for
 fixes that change nothing about how it is used.
 
+## [0.8.0] — 2026-09-10
+
+Seven pull requests from @bbolinger and @fritzzetik, every one of them measured
+on real hardware first. Push-to-talk works on a family that used to refuse it,
+the live view starts about three times sooner, and the opt-in encoder that used
+to buy that head start is gone.
+
+### Changed
+
+- **The live view starts in about four seconds instead of about twelve, with no
+  encoder.** A segment normally has to begin on a keyframe and Blink sends one
+  every four seconds, which set the segment length and left a player waiting for
+  enough playlist to start. The segmenter now runs with `split_by_time`, cutting
+  segments on the clock at the one-second target instead of on Blink's
+  keyframes; only every fourth segment opens on a keyframe, so the playlist
+  window is eight segments rather than four. Copy mode throughout — no re-encode
+  and no per-stream encoder cost. Measured on an iPhone by @bbolinger ([#50]).
+- **The `low_latency` add-on option (`hls_transcode`) is gone.** It was added to
+  close an eight-to-twelve-second startup gap that two other fixes had already
+  mostly closed, and re-timing showed it bought two to three seconds for a real
+  cost: a forced keyframe every second under a 2 Mbit/s cap, with the keyframe
+  taking about 93% of the bits, so the picture rebuilt every second and never
+  sharpened — visibly soft next to the Blink app, at four times the bandwidth.
+  On an iPhone it also stalled the video whenever Talk was held, because the
+  re-encoded downlink competed with the microphone upload; that stall has no
+  mechanism left. Measured with per-frame `ffprobe` output by @bbolinger
+  ([#48], [#50]).
+
+  **Upgrading:** nothing to do. The add-on still accepts a stored `low_latency`
+  so an existing install keeps booting — Supervisor rejects any stored option
+  its schema does not name — but nothing reads the value. It can be deleted from
+  your add-on options, and the key will be removed a release after this one.
+- **Push-to-talk is offered on the Wired Floodlight (`superior`).** It was
+  denied by default because the camera closed the stream about four seconds into
+  a hold and then refused to rejoin for about three minutes, which read as the
+  audio shape being wrong. It was not: ffmpeg's AAC encoder emits PNS frames by
+  default, the camera's decoder does not handle them, and it stopped draining
+  its input queue and closed the session about 68 frames after the first one.
+  The encoder now runs with `-aac_pns 0`. Confirmed audible on `superior`,
+  `catalina` and `xt2` — every family on this account's IMMI path. `xt` and
+  `white` stay denied; they get RTSP, which has no upstream audio channel at
+  all, so no work on the proxy changes them. Found and fixed by @bbolinger
+  ([#47]).
+
+### Fixed
+
+- **Push-to-talk no longer loses the start of what you say.** The encoder was
+  started with `-fflags nobuffer`, which discarded audio that had already
+  arrived rather than letting it queue. Found and fixed by @bbolinger ([#44]).
+- **A re-pressed Talk button cannot build a second microphone processor.**
+  Starting talk is asynchronous — a `getUserMedia` prompt and a WebSocket
+  connect — and a press during that window left the first attempt still wiring
+  itself up behind the second, so two processors fed the same socket. Each
+  attempt now carries an epoch and abandons itself, releasing its tracks, if it
+  is no longer the current one. Found and fixed by @bbolinger ([#45]).
+- **Push-to-talk messages appear where they can be seen.** They were written to
+  the status line inside the overlay, and the same handler that enables Hold
+  Talk hides that overlay — so "Could not start microphone" was written to an
+  invisible element every time. They now go to a notice that outlives the
+  overlay. Found and fixed by @bbolinger ([#46]).
+- **A held Talk button stays held on a phone.** A finger drifts, and leaving the
+  button's box fired `pointerleave`, which was treated as a release; iOS also
+  raises `blur` for its own microphone indicator, which ended the press outright.
+  The button now captures the pointer for the duration of the hold, refuses to
+  be claimed as a pan gesture, and ignores a `blur` that arrives while a pointer
+  is still down. Found and fixed by @fritzzetik ([#49]).
+
+### Documentation
+
+- **The snapshot precondition on Video Doorbells**, and which cameras take which
+  path, are written down in `KNOWN_LIMITATIONS.md`. Contributed by @fritzzetik
+  ([#51]).
+
+[#44]: https://github.com/Teethree89/ha-blink-live-view-proxy/pull/44
+[#45]: https://github.com/Teethree89/ha-blink-live-view-proxy/pull/45
+[#46]: https://github.com/Teethree89/ha-blink-live-view-proxy/pull/46
+[#47]: https://github.com/Teethree89/ha-blink-live-view-proxy/pull/47
+[#48]: https://github.com/Teethree89/ha-blink-live-view-proxy/issues/48
+[#49]: https://github.com/Teethree89/ha-blink-live-view-proxy/pull/49
+[#50]: https://github.com/Teethree89/ha-blink-live-view-proxy/pull/50
+[#51]: https://github.com/Teethree89/ha-blink-live-view-proxy/pull/51
+
 ## [0.7.1] — 2026-09-05
 
 - **The integration loads again.** 0.7.0 imported `CONF_CLIP_RECORDING` and

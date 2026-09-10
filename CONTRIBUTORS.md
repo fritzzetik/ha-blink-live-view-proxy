@@ -18,14 +18,19 @@ the live-view handshake this proxy extends across both the `immis://` and
 ## Leaderboard
 
 Counted from this repository's merged pull requests and `git log` on
-2026-09-05.
+2026-09-10, at the 0.8.0 release. Commits include merge commits, and the
+several git identities some contributors have committed under are counted
+together.
 
 | Rank | Contributor | Merged PRs | Commits |
 |---|---|---|---|
-| 1 | [@Teethree89](https://github.com/Teethree89) | 18 | 108 |
-| 2 | [@bbolinger](https://github.com/bbolinger) | 14 | 18 |
-| 3 | [@fritzzetik](https://github.com/fritzzetik) | 4 | 7 |
+| 1 | [@Teethree89](https://github.com/Teethree89) | 19 | 119 |
+| 2 | [@bbolinger](https://github.com/bbolinger) | 19 | 26 |
+| 3 | [@fritzzetik](https://github.com/fritzzetik) | 4 | 9 |
 | 4 | [@ivhazu](https://github.com/ivhazu) | 1 | 1 |
+
+@bbolinger drew level on merged pull requests at 0.8.0, taking five of the
+seven in that release; rank is held on the commit tiebreak.
 
 ## Maintaining this file
 
