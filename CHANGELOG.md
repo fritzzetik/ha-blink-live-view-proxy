@@ -8,7 +8,7 @@ While this is pre-1.0, the minor version moves for anything user-visible (new
 behaviour, a dropped architecture, a changed default) and the patch version for
 fixes that change nothing about how it is used.
 
-## [0.9.0] — 2026-09-10
+## [0.8.1] — 2026-09-10
 
 ### Fixed
 
@@ -72,7 +72,7 @@ to buy that head start is gone.
   **Upgrading:** nothing to do. The add-on still accepts a stored `low_latency`
   so an existing install keeps booting — Supervisor rejects any stored option
   its schema does not name — but nothing reads the value. It can be deleted from
-  your add-on options, and the key will be removed a release after this one.
+  your add-on options, and the key will be removed in 1.0.
 - **Push-to-talk is offered on the Wired Floodlight (`superior`).** It was
   denied by default because the camera closed the stream about four seconds into
   a hold and then refused to rejoin for about three minutes, which read as the

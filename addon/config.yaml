@@ -3,7 +3,7 @@ description: >-
   Unofficial local live-view proxy and clip archive for Blink cameras. Not
   affiliated with, endorsed by, or supported by Amazon or Blink.
   Install the matching integration via HACS (or from custom_components/ in this repo).
-version: "0.9.0"
+version: "0.8.1"
 slug: "blink_liveview_proxy"
 init: false
 # armhf and armv7 are deliberately absent: Supervisor deprecated both, and
@@ -52,8 +52,9 @@ schema:
   # but Supervisor rejects a stored option that its schema does not name, so
   # dropping the key outright would stop the add-on booting for anyone who had
   # turned it on. Optional and absent from `options:` above, so it is never
-  # written into a new install. Remove it a release after 0.8.0, once stored
-  # copies have aged out.
+  # written into a new install. Remove it in 1.0, once stored copies have aged
+  # out. (0.8.1 is deliberately not that release: it shipped days after 0.8.0,
+  # so nothing had aged out yet.)
   low_latency: bool?
 ports:
   8088/tcp: null
