@@ -20,7 +20,6 @@ options:
   blink_2fa_code: ""
   proxy_api_token: ""
   port: 8088
-  low_latency: false
   cameras: []
   ptt_disabled_product_types: []
   ptt_disabled_camera_types: []
@@ -31,7 +30,6 @@ schema:
   blink_2fa_code: str
   proxy_api_token: str
   port: int
-  low_latency: bool
   cameras:
     - slug: str
       entity_id: str
@@ -50,6 +48,13 @@ schema:
     - str
   ptt_force_enabled_slugs:
     - str
+  # Accepted and ignored. The low-latency re-encode this switched on is gone,
+  # but Supervisor rejects a stored option that its schema does not name, so
+  # dropping the key outright would stop the add-on booting for anyone who had
+  # turned it on. Optional and absent from `options:` above, so it is never
+  # written into a new install. Remove it a release after 0.8.0, once stored
+  # copies have aged out.
+  low_latency: bool?
 ports:
   8088/tcp: null
 ports_description:

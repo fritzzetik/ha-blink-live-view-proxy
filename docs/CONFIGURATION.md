@@ -90,31 +90,32 @@ why the proxy speaks the protocol itself rather than handing the URL to ffmpeg
 — ffmpeg aborts with `CSeq 2 expected, 1 received` before the camera is ever
 asked to wake, so the camera never lights up and nothing explains why.
 
-## Low Latency
+## Start-up
 
-By default the proxy copies Blink's stream into HLS segments unchanged. Blink
-sends a keyframe every four seconds and a segment can only begin on one, so
-each segment holds four seconds of video and a player buffers a few of them
-before it starts. The picture typically appears eight to twelve seconds after
-the tap.
+The proxy copies Blink's stream into HLS segments unchanged — there is no
+re-encode and no encoder cost per open stream.
 
-`hls_transcode: true` (add-on option `low_latency`) re-encodes the video with
-libx264 so a keyframe can be forced every second and the segments really are
-one second long. On the same cameras the picture appears in two to seven
-seconds, most of which is Blink waking the camera. Audio is still copied.
+Blink sends a keyframe every four seconds. A segment normally has to begin on
+one, which used to make every segment four seconds long and left a player
+waiting eight to twelve seconds after the tap before it had enough of the
+playlist to start. The segmenter now runs with `split_by_time`, so segments are
+cut on the clock at the one-second target (`-hls_time 1`) instead of on Blink's
+keyframes. Only every fourth segment opens on a keyframe; a player that joins
+mid-group waits for the next one, which is why the playlist window is eight
+segments (`-hls_list_size 8`) rather than four.
 
-The cost is one `libx264 ultrafast` encode while a live view is open, and
-another for each further live view open at the same time. Measured with the
-Supervisor's own add-on stats, a 720p stream takes about a tenth of one core
-on a 2.7 GHz desktop i5; expect roughly half a core on a Raspberry Pi 4.
+Measured on an iPhone, the picture arrives about four seconds after the tap
+instead of about twelve. Most of what is left is Blink waking the camera, which
+nothing on this side can shorten.
 
-The encode is capped at 2 Mbit/s so a segment is never larger than a phone on
-the far side of the house can fetch in a second, and the output frame rate is
-pinned to 24 (`hls_frame_rate`), which is what every Blink camera sends. Both
-matter: without the cap a busy outdoor scene reached 8 Mbit/s and stalled the
-player, and without the pin a camera on a weak signal, whose stream opened with
-a gap, had ffmpeg guessing a 90,000 fps frame rate and never finishing a
-segment.
+An opt-in `hls_transcode` mode (add-on option `low_latency`) used to buy the
+same head start by re-encoding through `libx264` to force a keyframe every
+second. It was removed in 0.8.0: clock-cut segments get there without an
+encoder, and the re-encode spent a 2 Mbit/s cap on restarting the picture every
+second rather than on detail, which cost visible quality. A client uploading
+push-to-talk audio at the same time could not always keep up with it either.
+The add-on still accepts a stored `low_latency` so an existing install keeps
+booting, but the value does nothing.
 
 ## ffmpeg Tuning
 

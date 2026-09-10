@@ -72,9 +72,7 @@ class HlsSession:
                 self.slug, datetime.datetime.now(datetime.timezone.utc)
             )
             self.cache_tmp = self.cache_final.with_suffix(".ts.part")
-            # A second output on the same input, always a straight copy: the
-            # cache should hold what Blink sent, not the re-encode low-latency
-            # mode may be doing for the playlist.
+            # A second output on the same input, holding what Blink sent.
             cache_args = [
                 "-map", "0:v:0",
                 "-map", "0:a:0?",
@@ -83,29 +81,11 @@ class HlsSession:
                 str(self.cache_tmp),
             ]
 
-        # Blink's GOP is 4s, so copied segments are 4s. Re-encoding forces a
-        # keyframe every second; it costs an encode per stream, hence opt-in.
-        transcode = bool(self.manager.config.get("hls_transcode", False))
-        if transcode:
-            codec_args = [
-                "-c:v", "libx264",
-                "-preset", "ultrafast",
-                "-tune", "zerolatency",
-                "-g", "30",
-                "-sc_threshold", "0",
-                "-force_key_frames", "expr:gte(t,n_forced*1)",
-                # Uncapped, libx264 hit 8 Mbit/s on foliage and phones stalled.
-                "-maxrate", "2000k",
-                "-bufsize", "2000k",
-                # If the probe misses the frame rate ffmpeg guesses 90000 fps
-                # and never finishes a segment.
-                "-r", str(self.manager.config.get("hls_frame_rate", 24)),
-                "-c:a", "copy",
-            ]
-        else:
-            codec_args = ["-c", "copy"]
-        # iOS wants about six seconds of playlist before it starts.
-        list_size = "6" if transcode else "4"
+        # Segments are cut on the clock, not on Blink's 4 s keyframes, so the
+        # playlist can declare a 1 s target and iOS starts after ~3 s instead of
+        # ~12. Only every fourth segment opens on a keyframe; a player that lands
+        # mid-group waits for the next one, so the window keeps 8 s available.
+        codec_args = ["-c", "copy"]
 
         log_handle = open(self.log_path, "wb")
         try:
@@ -136,9 +116,9 @@ class HlsSession:
                 "-hls_time",
                 "1",
                 "-hls_list_size",
-                list_size,
+                "8",
                 "-hls_flags",
-                "delete_segments+omit_endlist+program_date_time",
+                "delete_segments+omit_endlist+program_date_time+split_by_time",
                 "-hls_segment_filename",
                 str(segment_pattern),
                 str(self.playlist),
