@@ -61,7 +61,34 @@ jobs:
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
+
+      # Same reasoning as the HACS job above, one layer deeper.
+      # home-assistant/actions/hassfest is a *composite* action whose only real
+      # step is `docker run ghcr.io/home-assistant/hassfest` - with no tag at
+      # all, so it resolves to :latest. Pinning the git ref (or the repo's lone
+      # 1.0.0 tag) would pin the composite wrapper and still run a floating
+      # image, so again the digest is the only thing that pins what runs.
+      #
+      # This digest is the image that validated this repository on 2026-09-10.
+      #
+      # The composite also installs a problem matcher, which turns hassfest's
+      # "* [ERROR] ..." lines into annotations on the run. Calling the image
+      # directly skips the wrapper and would lose that, so the matcher is
+      # vendored next to this file - it is fourteen lines and one regex.
+      - name: Hassfest annotations
+        if: github.event_name != 'schedule'
+        run: echo "::add-matcher::.github/hassfest-problem-matcher.json"
+
       - name: Hassfest
+        if: github.event_name != 'schedule'
+        uses: docker://ghcr.io/home-assistant/hassfest@sha256:d0f082cb684c7560666138e501cdbe36137927acb075e276729728179108651d
+
+      # The canary. hassfest tracks Home Assistant itself and its rules move
+      # with each release, so main is validated against the current image once
+      # a night: a failure there means the pin above needs a look, without a
+      # rule that landed this morning turning somebody's pull request red.
+      - name: Hassfest against current rules
+        if: github.event_name == 'schedule'
         uses: home-assistant/actions/hassfest@master
 
   tests:
