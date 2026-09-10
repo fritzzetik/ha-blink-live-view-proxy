@@ -12,6 +12,38 @@
 - Do not add `Co-Authored-By` trailers, `Generated-By` markers, or similar tags naming Claude, Codex, ChatGPT, OpenAI, Anthropic, or any other AI tool.
 - Keep repository authorship and attribution limited to the human contributors unless the user explicitly requests otherwise.
 
+## Contributor Leaderboard
+
+- `CONTRIBUTORS.md` carries a leaderboard of merged pull requests and commits
+  per contributor. Update it once per tagged release, in the release commit
+  itself — not per merged pull request. Recounting from scratch at the release
+  is both less work and more accurate than incrementing a row per merge, which
+  is how the counts drifted before 0.8.0.
+- Recount, do not increment. Take the numbers from GitHub and `git log` rather
+  than adding to the previous table, so an error corrects itself at the next
+  release instead of compounding.
+- The counting method is easy to get wrong, so it is written down here and
+  restated in `CONTRIBUTORS.md` itself:
+  - **Merged PRs** come from GitHub, not from `git log`:
+    `gh pr list --state merged --limit 300 --json author --jq '.[].author.login' | sort | uniq -c | sort -rn`
+  - **Commits** come from `git log main` and **include merge commits**. Counting
+    `--no-merges` gives materially different numbers and does not reproduce any
+    previously published table.
+  - **Fold each person's git identities together.** Contributors here have
+    committed under several name/email pairs (a GitHub noreply address, a
+    personal address, a work address, and differing display names). Counting by
+    raw email splits one person across several rows and understates them.
+- Rank by merged pull requests, ties broken by commits.
+- Say in the file which date the count was taken on and that it was taken at
+  that release, so the next recount knows what it is comparing against.
+- A count taken in the release commit cannot include that commit or the merge
+  that lands it, so the published table always trails live numbers by a few
+  commits and, for whoever cuts the release, one pull request. This is expected
+  and self-corrects at the next recount. Do not chase it with follow-up commits;
+  each one makes the table stale again.
+- Anyone who has landed a pull request gets a row, starting at their first one.
+  There is no threshold to clear.
+
 <!-- BEGIN CODEX CONVERSATION MAINTENANCE -->
 ## Conversation Maintenance
 
