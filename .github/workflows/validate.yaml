@@ -18,7 +18,39 @@ jobs:
     name: HACS
     runs-on: ubuntu-latest
     steps:
+      # Pinned by image digest, and it has to be the digest rather than a tag.
+      # hacs/action is a Docker action whose action.yml hardcodes
+      # `image: docker://ghcr.io/hacs/action:main` - on every git ref it has,
+      # including the 22.5.0 release from 2022. So `hacs/action@22.5.0` pins the
+      # action.yml and still pulls a floating `:main` image: the git ref pins
+      # nothing that runs.
+      #
+      # Left unpinned it bit us. On one branch, validation failed three times
+      # across two shas while hacs.json and manifest.json were byte-identical to
+      # a main that passed minutes earlier; only the two checks that read file
+      # contents failed, with "Integration manifest validation failed for: None".
+      # The same commits on a differently-named branch passed at once.
+      #
+      # This digest is the image that validated this repository on 2026-09-10.
+      # Bump it deliberately; the nightly job below says when it is worth doing.
       - name: HACS validation
+        if: github.event_name != 'schedule'
+        uses: docker://ghcr.io/hacs/action@sha256:dc92fdad2f6ffbe74bffb7269d781ea8e064f52d9bb486cdf3925d74e7ab6ebf
+        with:
+          category: integration
+          comment: "true"
+          # A direct docker:// step gets no action.yml, so the input defaults
+          # defined there do not apply and the token has to be passed by hand.
+          github_token: ${{ github.token }}
+
+      # The canary, and the reason pinning is safe rather than a slow drift into
+      # non-compliance. HACS's rules move, and this repository is heading for a
+      # hacs/default submission that will be judged by whatever HACS runs on the
+      # day. Once a night, on main only, validate against current HACS: a failure
+      # here means the rules changed and the pin above needs a look, without a
+      # third party ever turning somebody's pull request red unannounced.
+      - name: HACS validation against current rules
+        if: github.event_name == 'schedule'
         uses: hacs/action@main
         with:
           category: integration
