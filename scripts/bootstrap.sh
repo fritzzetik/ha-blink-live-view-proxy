@@ -95,7 +95,19 @@ if ! command -v git >/dev/null 2>&1; then
 fi
 
 if [ -d "$SRC_DIR/.git" ]; then
-  git -C "$SRC_DIR" fetch --tags --prune --quiet
+  # --force matters, and the reason is not obvious. A tag that was recreated
+  # upstream - a prerelease deleted, a release re-cut - points somewhere else
+  # than the copy this host already has, and a plain `fetch --tags` refuses to
+  # move it: "[rejected] ... would clobber existing tag", exit 1. Under the
+  # `set -e` above that ends the script, and --quiet suppresses the one line
+  # that would have said why, so the update exits 1 in under a second having
+  # printed nothing at all. The host then stays on its old version forever and
+  # every later attempt fails the same silent way, including the button in
+  # Home Assistant. Found on a host wedged since the 0.7.0 prereleases.
+  if ! git -C "$SRC_DIR" fetch --tags --prune --force --quiet; then
+    echo "Could not fetch tags from $REPO_URL into $SRC_DIR." >&2
+    exit 1
+  fi
 else
   mkdir -p "$(dirname "$SRC_DIR")"
   git clone --quiet "$REPO_URL" "$SRC_DIR"

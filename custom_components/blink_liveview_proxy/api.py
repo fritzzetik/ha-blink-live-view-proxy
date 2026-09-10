@@ -85,6 +85,16 @@ class BlinkLiveviewProxyClient:
         """
         return await self._request_json("/update", method="POST")
 
+    async def async_get_proxy_update_log(self, lines: int = 200) -> dict[str, Any]:
+        """Fetch the proxy updater's own journal.
+
+        The panel used to say "check the log" without naming one or offering a
+        way to read it, which on a headless host means finding an SSH session
+        before you can learn anything. 501 means this install has no updater
+        unit to have a log for.
+        """
+        return await self._request_json(f"/update/log?lines={int(lines)}")
+
     async def async_get_auth_status(self) -> dict[str, Any]:
         """Fetch the proxy's public browser-authentication state."""
         return await self._request_json("/auth/status")

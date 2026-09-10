@@ -28,6 +28,11 @@ LOGGER = logging.getLogger(LOGGER_NAME)
 UPDATE_UNIT = "blink-liveview-proxy-update.service"
 UPDATE_SCRIPT = Path("/usr/local/sbin/blink-liveview-proxy-update.sh")
 UPDATE_UNIT_FILE = Path("/etc/systemd/system") / UPDATE_UNIT
+# install-proxy.sh writes SRC_DIR here and the unit reads it through
+# EnvironmentFile=, so this is where to look for the checkout the updater moves
+# between tags.
+UPDATE_ENV_FILE = Path("/etc/blink-liveview-proxy/update.env")
+DEFAULT_SRC_DIR = Path("/opt/src/ha-blink-live-view-proxy")
 # Docker writes this into every container it starts, and nothing else does.
 DOCKER_MARKER = Path("/.dockerenv")
 
@@ -108,6 +113,142 @@ async def is_running() -> bool:
     return await _systemctl("is-active", "--quiet", UPDATE_UNIT) == 0
 
 
+def source_dir() -> Path:
+    """Where the checkout the updater moves between tags lives."""
+    override = os.getenv("SRC_DIR")
+    if override:
+        return Path(override)
+    try:
+        for line in UPDATE_ENV_FILE.read_text().splitlines():
+            key, _, value = line.partition("=")
+            if key.strip() == "SRC_DIR" and value.strip():
+                return Path(value.strip())
+    except OSError:
+        pass
+    return DEFAULT_SRC_DIR
+
+
+async def _run(*args: str) -> tuple[int, str]:
+    """Run a command, returning its exit code and combined output."""
+    process = await asyncio.create_subprocess_exec(
+        *args,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.STDOUT,
+    )
+    output, _ = await process.communicate()
+    return process.returncode or 0, output.decode("utf-8", "replace")
+
+
+async def preflight() -> list[str]:
+    """Repair the one thing that silently stops every future update.
+
+    A tag that was recreated upstream - a prerelease deleted, a release re-cut -
+    points somewhere else than the copy already on this host, and a plain
+    `git fetch --tags` refuses to move it. It exits 1 saying "would clobber
+    existing tag", except that bootstrap.sh passes --quiet, which suppresses
+    exactly that line. Under its `set -e` the script then dies in under a
+    second having printed nothing at all, the host stays on its old version,
+    and every later press of the button in Home Assistant fails the same silent
+    way. One host sat wedged from the 0.7.0 prereleases until 0.8.0.
+
+    bootstrap.sh now fetches with --force, which fixes it going forward - but a
+    wedged host can never install the version that carries the fix, because
+    installing it is the thing that is broken. So the repair has to happen from
+    this side, before the unit starts. Cheap: on a healthy host it is one fetch
+    that exits 0 and reports nothing.
+    """
+    notes: list[str] = []
+    src = source_dir()
+    if not (src / ".git").is_dir():
+        return notes
+    if not shutil.which("git"):
+        return notes
+
+    code, _ = await _run("git", "-C", str(src), "fetch", "--tags", "--prune", "--quiet")
+    if code == 0:
+        return notes
+
+    # Find out what a plain fetch would have said, now that --quiet is not
+    # hiding it, so the reason reaches the log either way.
+    _, detail = await _run("git", "-C", str(src), "fetch", "--tags", "--prune")
+    rejected = [
+        line.strip()
+        for line in detail.splitlines()
+        if "rejected" in line or "clobber" in line
+    ]
+    forced, output = await _run(
+        "git", "-C", str(src), "fetch", "--tags", "--prune", "--force"
+    )
+    if forced == 0:
+        moved = [line.strip() for line in output.splitlines() if "tag update" in line]
+        note = (
+            f"Tag fetch in {src} exited {code} and was repaired with --force"
+            + (f": {', '.join(moved)}" if moved else ".")
+        )
+        notes.append(note)
+        LOGGER.warning(
+            "Repaired a wedged update checkout in %s: a plain tag fetch exited "
+            "%s%s. Forced fetch succeeded%s",
+            src,
+            code,
+            f" ({'; '.join(rejected)})" if rejected else "",
+            f", moving {len(moved)} tag(s)" if moved else "",
+        )
+    else:
+        note = f"Tag fetch in {src} failed ({code}), and --force did not fix it."
+        notes.append(note)
+        LOGGER.error(
+            "Update checkout in %s cannot fetch tags: plain fetch exited %s, "
+            "forced fetch exited %s. Output: %s",
+            src,
+            code,
+            forced,
+            output.strip()[:500],
+        )
+    return notes
+
+
+async def recent_log(lines: int = 200) -> dict[str, Any]:
+    """The updater unit's own journal, for showing next to the button.
+
+    The panel used to tell people to "check the log" without saying which log
+    or giving them a way to see it, which on a headless box means finding an
+    SSH session before you can learn anything at all.
+    """
+    if detect_method() != METHOD_SYSTEMD:
+        raise UpdateUnavailableError(REASONS[detect_method()])
+    if not shutil.which("journalctl"):
+        return {
+            "unit": UPDATE_UNIT,
+            "available": False,
+            "reason": "journalctl is not available on this host.",
+            "lines": [],
+        }
+    capped = max(1, min(int(lines), 1000))
+    code, output = await _run(
+        "journalctl",
+        "-u",
+        UPDATE_UNIT,
+        "-n",
+        str(capped),
+        "--no-pager",
+    )
+    if code != 0:
+        return {
+            "unit": UPDATE_UNIT,
+            "available": False,
+            "reason": f"journalctl exited {code}.",
+            "lines": [],
+        }
+    _, state = await _run("systemctl", "show", UPDATE_UNIT, "-p", "Result", "--value")
+    return {
+        "unit": UPDATE_UNIT,
+        "available": True,
+        "result": state.strip() or None,
+        "lines": output.splitlines(),
+    }
+
+
 async def start() -> dict[str, Any]:
     """Start the installed updater unit. Takes no arguments, deliberately.
 
@@ -130,6 +271,10 @@ async def start() -> dict[str, Any]:
     if await is_running():
         raise UpdateBusyError("An update is already running.")
 
+    # Before the unit, not inside it: a host wedged this way cannot install the
+    # bootstrap.sh that fixes it, so the repair has to come from outside.
+    notes = await preflight()
+
     code = await _systemctl("start", "--no-block", UPDATE_UNIT)
     if code != 0:
         raise UpdateUnavailableError(
@@ -141,4 +286,11 @@ async def start() -> dict[str, Any]:
     # "Started", not "updated": the unit exits early when the newest tag is
     # already installed, and the integration confirms by watching the version
     # on /status change, not by believing this.
-    return {"started": True, "method": METHOD_SYSTEMD, "unit": UPDATE_UNIT}
+    started: dict[str, Any] = {
+        "started": True,
+        "method": METHOD_SYSTEMD,
+        "unit": UPDATE_UNIT,
+    }
+    if notes:
+        started["preflight"] = notes
+    return started

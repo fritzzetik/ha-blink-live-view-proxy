@@ -274,6 +274,25 @@ async def update_handler(request: web.Request) -> web.Response:
         raise web.HTTPNotImplemented(text=f"{err}\n") from err
     return web.json_response(started, status=202, headers=AUTH_RESPONSE_HEADERS)
 
+async def update_log_handler(request: web.Request) -> web.Response:
+    """The updater unit's journal, so the panel can show why an update failed.
+
+    Header-authenticated like /update itself. A journal can carry paths and
+    hostnames, so it is not something a query token should be able to pull into
+    browser history or a proxy log.
+    """
+    check_header_authorized(request, "Self-update log")
+    try:
+        lines = int(request.query.get("lines", "200"))
+    except (TypeError, ValueError):
+        lines = 200
+    try:
+        payload = await selfupdate.recent_log(lines)
+    except selfupdate.UpdateUnavailableError as err:
+        raise web.HTTPNotImplemented(text=f"{err}\n") from err
+    return web.json_response(payload, headers=AUTH_RESPONSE_HEADERS)
+
+
 async def cameras_handler(request: web.Request) -> web.Response:
     check_authorized(request)
     return web.json_response({"cameras": _require_client(request).list_cameras()})
@@ -770,6 +789,7 @@ async def make_app(
     app.router.add_post("/auth/pin", auth_pin_handler)
     app.router.add_post("/auth/cancel", auth_cancel_handler)
     app.router.add_post("/update", update_handler)
+    app.router.add_get("/update/log", update_log_handler)
     app.router.add_get("/cameras", cameras_handler)
     app.router.add_get("/clips", clips_handler)
     app.router.add_get("/clips/{clip_id}.mp4", clip_download_handler)

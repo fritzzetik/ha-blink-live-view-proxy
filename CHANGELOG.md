@@ -8,6 +8,39 @@ While this is pre-1.0, the minor version moves for anything user-visible (new
 behaviour, a dropped architecture, a changed default) and the patch version for
 fixes that change nothing about how it is used.
 
+## [0.9.0] — 2026-09-10
+
+### Fixed
+
+- **A tag moved upstream no longer wedges every future update, silently.** A
+  tag that gets recreated — a prerelease deleted, a release re-cut — points
+  somewhere other than the copy already on a host, and `git fetch --tags`
+  refuses to move it: `would clobber existing tag`, exit 1. `bootstrap.sh`
+  passed `--quiet`, which suppresses exactly that line, and runs under
+  `set -e`. So the updater died in under a second having printed nothing at
+  all, the host stayed on its old version, and every later press of the update
+  button failed the same silent way. One host sat wedged from the 0.7.0
+  prereleases until 0.8.0, with five attempts and an empty journal to show for
+  it. `bootstrap.sh` now fetches with `--force` and reports a fetch it cannot
+  do; because a wedged host can never install that fix — installing it is the
+  broken thing — the proxy also repairs the checkout itself before starting the
+  updater. On a healthy host that is one fetch that exits 0 and says nothing.
+
+### Added
+
+- **The update log is readable from the panel.** The five-minute timeout told
+  people to "check the proxy log" without naming a log or offering a way to
+  read one, which on a headless host means finding an SSH session before you
+  can learn anything. `GET /update/log` returns the updater unit's own journal,
+  behind the same header authentication as `/update` — a journal carries paths
+  and hostnames, so it is not something a query token should carry into browser
+  history — and the update banner has a **Show update log** button.
+- **Manual update instructions for whichever install this is.** An install that
+  cannot use the button previously got one sentence: "Updates are manual for
+  this installation." Each of the four install types — systemd host, add-on,
+  container, and everything else — now carries an accordion with the actual
+  commands, including how to unwedge a checkout by hand.
+
 ## [0.8.0] — 2026-09-10
 
 Seven pull requests from @bbolinger and @fritzzetik, every one of them measured
